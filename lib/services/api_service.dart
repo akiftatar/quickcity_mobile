@@ -860,15 +860,32 @@ class ApiService {
           'message': data['message'] ?? '${locations.length} konum güncellendi',
         };
       } else {
+        print('🔴 Batch Location Update HTTP Error: ${response.statusCode}');
+        print('Response Data: ${response.data}');
         return {
           'success': false,
           'message': 'Konum güncellenemedi: ${response.statusCode}',
+          'error_details': response.data,
+          'status_code': response.statusCode,
         };
       }
     } on DioException catch (e) {
+      // 422 hatası için detaylı log
+      if (e.response?.statusCode == 422) {
+        print('🔴 BATCH LOCATION UPDATE 422 VALIDATION ERROR:');
+        print('Response Data: ${e.response?.data}');
+        print('Request Data: ${locations.length} konum');
+        if (locations.isNotEmpty) {
+          print('İlk konum örneği: ${locations.first}');
+          print('İlk konum keys: ${locations.first.keys}');
+        }
+      }
+      
       return {
         'success': false,
         'message': _handleDioError(e),
+        'error_details': e.response?.data,
+        'status_code': e.response?.statusCode,
       };
     } catch (e) {
       return {

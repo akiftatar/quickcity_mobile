@@ -648,22 +648,8 @@ class _TomTomNavigationScreenState extends State<TomTomNavigationScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                _isNavigating ? Icons.navigation : Icons.play_circle,
-                color: const Color(0xFF0A3D62),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _isNavigating
-                    ? l10n.tomTomNavigationActive
-                    : l10n.tomTomNavigationInactive,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-              const Spacer(),
               ElevatedButton.icon(
                 onPressed: _isLoading ? null : _toggleNavigation,
                 icon: Icon(_isNavigating ? Icons.stop : Icons.play_arrow),

@@ -86,136 +86,88 @@ class _MapScreenState extends State<MapScreen> {
       final locationIds = widget.locations.map((loc) => loc.id).toSet();
       print('📍 ${locationIds.length} lokasyon için çizimler yükleniyor...');
 
-      // Her lokasyon için çizimleri getir (paralel)
+      // ÖNCE: Lokasyon bazlı paralel yükleme (ÇOK DAHA HIZLI!)
+      print('⚡ HIZLI YÜKLEME: Lokasyon bazlı paralel yükleme başlatılıyor...');
       final List<LocationDrawing> allDrawings = [];
-
-      // Tüm çizimleri sayfalama ile getir
-      print('🔵 Tüm çizimler getiriliyor (sayfalama ile)...');
-
-      int page = 1;
-      const int perPage = 200;
-      int? totalDrawings;
-      bool hasMorePages = true;
-
-      while (hasMorePages) {
-        print('🔵 Sayfa $page yükleniyor...');
-        final pageResult = await _apiService.getAllDrawings(
-          perPage: perPage,
-          visibleOnly: true,
-          page: page,
-        );
-
-        if (pageResult['success'] == true) {
-          final drawings = pageResult['drawings'] ?? [];
-
-          // İlk sayfada total'i al (sadece bir kez)
-          if (totalDrawings == null && pageResult['total'] != null) {
-            final totalValue = pageResult['total'];
-            if (totalValue is int) {
-              totalDrawings = totalValue;
-            } else if (totalValue is String) {
-              totalDrawings = int.tryParse(totalValue);
+      
+      // Tüm lokasyonlar için paralel API çağrıları yap
+      final List<Future<void>> locationFutures = locationIds.map((locationId) async {
+        try {
+          final result = await _apiService.getDrawingsByLocation(locationId);
+          if (result['success'] == true) {
+            final drawings = result['drawings'] ?? [];
+            if (drawings.isNotEmpty) {
+              allDrawings.addAll(drawings);
+              print('✅ Lokasyon $locationId: ${drawings.length} çizim yüklendi');
             }
           }
+        } catch (e) {
+          print('⚠️ Lokasyon $locationId yükleme hatası: $e');
+        }
+      }).toList();
+      
+      // Tüm paralel çağrıları bekle
+      await Future.wait(locationFutures);
+      
+      print('⚡ Paralel yükleme tamamlandı: ${allDrawings.length} çizim yüklendi');
+      
+      // Eğer çok az çizim yüklendiyse, sayfalama ile yedek yükleme yap
+      if (allDrawings.length < locationIds.length * 2) {
+        print('⚠️ Az çizim yüklendi, sayfalama ile yedek yükleme yapılıyor...');
 
-          allDrawings.addAll(drawings);
-
-          print(
-            '🔵 Sayfa $page: ${drawings.length} çizim alındı (Toplam: ${totalDrawings ?? 'bilinmiyor'}, Yüklenen: ${allDrawings.length})',
-          );
-
-          // Sayfalama kontrolü
-          if (totalDrawings != null && totalDrawings! > 0) {
-            // Toplam çizim sayısına göre kontrol et
-            hasMorePages = allDrawings.length < totalDrawings!;
-            print(
-              '🔵 Sayfalama kontrolü: Yüklenen=${allDrawings.length}, Toplam=$totalDrawings, Devam=${hasMorePages ? 'Evet' : 'Hayır'}',
+        int page = 1;
+        const int perPage = 200;
+        const int maxPages = 5; // Maksimum 5 sayfa (1000 çizim) - hız için sınırlı
+        int? totalDrawings;
+        bool hasMorePages = true;
+        final Set<int> foundLocationIds = allDrawings.map((d) => d.locationId).toSet();
+        
+        while (hasMorePages && page <= maxPages) {
+          try {
+            final pageResult = await _apiService.getAllDrawings(
+              perPage: perPage,
+              visibleOnly: true,
+              page: page,
             );
 
-            if (!hasMorePages) {
-              print(
-                '✅ Tüm çizimler yüklendi (${allDrawings.length}/$totalDrawings)',
-              );
-            }
-          } else {
-            // Total bilgisi yoksa, bu sayfada perPage'den az çizim varsa son sayfaya ulaştık
-            if (drawings.length < perPage) {
-              hasMorePages = false;
-              print(
-                '🔵 Son sayfaya ulaşıldı (bu sayfada ${drawings.length} çizim var, perPage=$perPage)',
-              );
-            } else {
-              // Güvenlik için maksimum 20 sayfa yükle (4000 çizim)
-              if (page >= 20) {
-                print(
-                  '⚠️ Maksimum sayfa sayısına ulaşıldı (20 sayfa = 4000 çizim)',
-                );
+            if (pageResult['success'] == true) {
+              final drawings = pageResult['drawings'] ?? [];
+              
+              // Sadece ilgili lokasyonların çizimlerini ekle
+              for (final drawing in drawings) {
+                if (locationIds.contains(drawing.locationId) && 
+                    !foundLocationIds.contains(drawing.locationId)) {
+                  allDrawings.add(drawing);
+                  foundLocationIds.add(drawing.locationId);
+                }
+              }
+              
+              // İlk sayfada total'i al
+              if (totalDrawings == null && pageResult['total'] != null) {
+                final totalValue = pageResult['total'];
+                if (totalValue is int) {
+                  totalDrawings = totalValue;
+                } else if (totalValue is String) {
+                  totalDrawings = int.tryParse(totalValue);
+                }
+              }
+              
+              // Sayfalama kontrolü
+              if (drawings.length < perPage || page >= maxPages) {
                 hasMorePages = false;
               } else {
-                hasMorePages = true;
-                print('🔵 Total bilgisi yok, bir sonraki sayfayı deniyoruz...');
+                page++;
               }
-            }
-          }
-
-          if (hasMorePages) {
-            page++;
-          }
-        } else {
-          print('⚠️ Sayfa $page yüklenemedi: ${pageResult['message']}');
-          hasMorePages = false;
-        }
-      }
-
-      final totalPages = page - 1;
-      print('🔵 Toplam ${allDrawings.length} çizim alındı ($totalPages sayfa)');
-      print('🔵 Lokasyon ID\'leri: ${locationIds.toList()}');
-
-      // Sadece kullanıcının lokasyonlarına ait çizimleri filtrele
-      final filteredDrawings =
-          allDrawings.where((drawing) {
-            return locationIds.contains(drawing.locationId);
-          }).toList();
-
-      final totalBeforeFilter = allDrawings.length;
-      allDrawings.clear();
-      allDrawings.addAll(filteredDrawings);
-      print(
-        '✅ ${filteredDrawings.length} çizim bulundu (toplam $totalBeforeFilter çizimden filtrelendi)',
-      );
-
-      // Eğer hiç çizim bulunamazsa, lokasyon bazlı yükleme dene
-      if (filteredDrawings.isEmpty) {
-        print(
-          '⚠️ Filtrelenmiş çizim bulunamadı, lokasyon bazlı yükleme deneniyor...',
-        );
-
-        int successCount = 0;
-        for (final locationId in locationIds) {
-          try {
-            print('🔵 Lokasyon $locationId için çizimler getiriliyor...');
-            final result = await _apiService.getDrawingsByLocation(locationId);
-            print(
-              '🔵 getDrawingsByLocation($locationId) response: success=${result['success']}, message=${result['message']}',
-            );
-
-            if (result['success'] == true) {
-              final drawings = result['drawings'] ?? [];
-              print(
-                '✅ Lokasyon $locationId için ${drawings.length} çizim bulundu',
-              );
-              allDrawings.addAll(drawings);
-              successCount++;
             } else {
-              print(
-                '⚠️ Lokasyon $locationId için çizim bulunamadı: ${result['message']}',
-              );
+              hasMorePages = false;
             }
           } catch (e) {
-            print('❌ Lokasyon $locationId için çizim yükleme hatası: $e');
+            print('⚠️ Sayfa $page yükleme hatası: $e');
+            hasMorePages = false;
           }
         }
-        print('✅ $successCount lokasyon için çizim yüklendi');
+        
+        print('✅ Yedek yükleme tamamlandı: Toplam ${allDrawings.length} çizim');
       }
 
       setState(() {
@@ -759,6 +711,11 @@ class _MapScreenState extends State<MapScreen> {
                 final coordinates = GeoJsonHelper.extractCoordinates(
                   drawing.geojson,
                 );
+                // Polygon için minimum 3 nokta gerekli
+                if (coordinates.length < 3) {
+                  print('⚠️ Polygon atlandı: yetersiz koordinat (${coordinates.length} nokta)');
+                  return null;
+                }
                 final colorInt = GeoJsonHelper.hexToColorInt(drawing.color);
                 final color = Color(colorInt).withOpacity(drawing.opacity);
 
@@ -769,7 +726,7 @@ class _MapScreenState extends State<MapScreen> {
                   borderStrokeWidth: drawing.strokeWidth,
                   isFilled: true,
                 );
-              }).toList(),
+              }).where((polygon) => polygon != null).cast<Polygon>().toList(),
         ),
       );
     }

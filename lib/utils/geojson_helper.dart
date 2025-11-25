@@ -18,10 +18,13 @@ class GeoJsonHelper {
       switch (geometryType) {
         case 'point':
           if (coords is List && coords.length >= 2) {
-            coordinates.add(LatLng(
-              _safeDouble(coords[1]), // lat
-              _safeDouble(coords[0]), // lng
-            ));
+            final lat = _safeDouble(coords[1]);
+            final lng = _safeDouble(coords[0]);
+            if (isValidCoordinate(lat, lng)) {
+              coordinates.add(LatLng(lat, lng));
+            } else {
+              print('⚠️ Geçersiz koordinat atlandı: lat=$lat, lng=$lng');
+            }
           }
           break;
           
@@ -29,10 +32,13 @@ class GeoJsonHelper {
           if (coords is List) {
             for (final coord in coords) {
               if (coord is List && coord.length >= 2) {
-                coordinates.add(LatLng(
-                  _safeDouble(coord[1]), // lat
-                  _safeDouble(coord[0]), // lng
-                ));
+                final lat = _safeDouble(coord[1]);
+                final lng = _safeDouble(coord[0]);
+                if (isValidCoordinate(lat, lng)) {
+                  coordinates.add(LatLng(lat, lng));
+                } else {
+                  print('⚠️ Geçersiz koordinat atlandı: lat=$lat, lng=$lng');
+                }
               }
             }
           }
@@ -45,10 +51,13 @@ class GeoJsonHelper {
               if (lineString is List) {
                 for (final coord in lineString) {
                   if (coord is List && coord.length >= 2) {
-                    coordinates.add(LatLng(
-                      _safeDouble(coord[1]), // lat
-                      _safeDouble(coord[0]), // lng
-                    ));
+                    final lat = _safeDouble(coord[1]);
+                    final lng = _safeDouble(coord[0]);
+                    if (isValidCoordinate(lat, lng)) {
+                      coordinates.add(LatLng(lat, lng));
+                    } else {
+                      print('⚠️ Geçersiz koordinat atlandı: lat=$lat, lng=$lng');
+                    }
                   }
                 }
               }
@@ -63,10 +72,13 @@ class GeoJsonHelper {
             if (exteriorRing is List) {
               for (final coord in exteriorRing) {
                 if (coord is List && coord.length >= 2) {
-                  coordinates.add(LatLng(
-                    _safeDouble(coord[1]), // lat
-                    _safeDouble(coord[0]), // lng
-                  ));
+                  final lat = _safeDouble(coord[1]);
+                  final lng = _safeDouble(coord[0]);
+                  if (isValidCoordinate(lat, lng)) {
+                    coordinates.add(LatLng(lat, lng));
+                  } else {
+                    print('⚠️ Geçersiz koordinat atlandı: lat=$lat, lng=$lng');
+                  }
                 }
               }
             }
@@ -82,10 +94,13 @@ class GeoJsonHelper {
               if (exteriorRing is List) {
                 for (final coord in exteriorRing) {
                   if (coord is List && coord.length >= 2) {
-                    coordinates.add(LatLng(
-                      _safeDouble(coord[1]), // lat
-                      _safeDouble(coord[0]), // lng
-                    ));
+                    final lat = _safeDouble(coord[1]);
+                    final lng = _safeDouble(coord[0]);
+                    if (isValidCoordinate(lat, lng)) {
+                      coordinates.add(LatLng(lat, lng));
+                    } else {
+                      print('⚠️ Geçersiz koordinat atlandı: lat=$lat, lng=$lng');
+                    }
                   }
                 }
               }
@@ -125,10 +140,13 @@ class GeoJsonHelper {
             final List<LatLng> points = [];
             for (final coord in lineString) {
               if (coord is List && coord.length >= 2) {
-                points.add(LatLng(
-                  _safeDouble(coord[1]), // lat
-                  _safeDouble(coord[0]), // lng
-                ));
+                final lat = _safeDouble(coord[1]);
+                final lng = _safeDouble(coord[0]);
+                if (isValidCoordinate(lat, lng)) {
+                  points.add(LatLng(lat, lng));
+                } else {
+                  print('⚠️ Geçersiz koordinat atlandı: lat=$lat, lng=$lng');
+                }
               }
             }
             if (points.length >= 2) {
@@ -177,6 +195,13 @@ class GeoJsonHelper {
       return double.tryParse(value) ?? 0.0;
     }
     return 0.0;
+  }
+
+  /// Koordinatın geçerli WGS84 enlem/boylam aralığında olup olmadığını kontrol et
+  static bool isValidCoordinate(double lat, double lng) {
+    // Enlem: -90 ile 90 arasında olmalı
+    // Boylam: -180 ile 180 arasında olmalı
+    return lat >= -90.0 && lat <= 90.0 && lng >= -180.0 && lng <= 180.0;
   }
 
   /// Çizim tipine göre geometry tipini belirle

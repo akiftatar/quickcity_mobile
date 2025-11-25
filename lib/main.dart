@@ -155,14 +155,20 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     
-    // Uygulama ön plana geldiğinde sadece token durumunu kontrol et
-    // Logout etmeyin, sadece background sync yapın
+    // Uygulama ön plana geldiğinde token durumunu kontrol et ve GPS tracking'i yeniden başlat
     if (state == AppLifecycleState.resumed) {
       final authService = Provider.of<AuthService>(context, listen: false);
-      // Sadece token kontrolü yap, logout etme
-      // Kullanıcı manuel olarak çıkış yapana kadar giriş yapmış kalır
-      print('📱 App resumed - Token durumu kontrol ediliyor (logout edilmeyecek)');
+      final workSessionService = Provider.of<WorkSessionService>(context, listen: false);
+      
+      print('📱 App resumed - Token durumu kontrol ediliyor ve GPS tracking yeniden başlatılıyor');
+      
+      // Token kontrolü yap (logout etme, kullanıcı manuel çıkış yapana kadar giriş yapmış kalır)
       authService.checkTokenValidity();
+      
+      // Eğer kullanıcı giriş yapmışsa ve aktif session varsa GPS tracking'i yeniden başlat
+      if (authService.isLoggedIn) {
+        workSessionService.resumeTrackingIfNeeded();
+      }
     }
   }
 

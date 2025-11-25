@@ -344,6 +344,13 @@ class WorkSessionHeader extends StatelessWidget {
         locations: locations,
       );
 
+      // Debug: lokasyon durumlarını logla
+      debugPrint('▶️ WorkSessionHeader start - total locations: ${locations.length}');
+      for (final loc in locations) {
+        final status = sessionService.getLocationStatus(loc.id);
+        debugPrint('   • Location ${loc.id} (${loc.displayAddress}) status: $status');
+      }
+
       if (context.mounted) {
         Navigator.pop(context); // Loading kapat
         final l10n = AppLocalizations.of(context)!;
@@ -355,6 +362,10 @@ class WorkSessionHeader extends StatelessWidget {
             final status = sessionService.getLocationStatus(loc.id);
             return status != 'completed';
           }).toList();
+          debugPrint('▶️ locationsToTrack count: ${locationsToTrack.length}');
+          for (final loc in locationsToTrack) {
+            debugPrint('   • Tracking ${loc.id} (${loc.displayAddress})');
+          }
           
           // Background service için lokasyon listesi hazırla
           final trackingLocations = locationsToTrack.map((location) => {
