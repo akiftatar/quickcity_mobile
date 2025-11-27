@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -298,12 +299,185 @@ class WorkSessionService extends ChangeNotifier {
 
       if (result['success'] == true) {
         await _handleCheckInSuccess(location.id, result['log']);
+        
+        // ✅ Backend'de otomatik check-out yapılmış olabilir, aktif session'ı yeniden yükle
+        // Böylece location list'te tüm durumlar güncel olur
+        unawaited(loadActiveSession());
+        
         return {
           'success': true,
           'log': result['log'],
           'message': result['message'] ?? 'Check-in başarılı',
         };
       } else {
+        // Backend'den "zaten aktif check-in var" hatası geldiğinde handle et
+        final errorMessage = result['message'] ?? '';
+        final statusCode = result['status_code'] ?? 0;
+        
+        // 400 hatası ve "aktif check-in" veya "zaten" kelimesi içeriyorsa
+        final isAlreadyActiveError = statusCode == 400 && (
+          errorMessage.toLowerCase().contains('aktif') ||
+          errorMessage.toLowerCase().contains('zaten') ||
+          errorMessage.toLowerCase().contains('already')
+        );
+        
+        if (isAlreadyActiveError) {
+          print('⚠️ Bu lokasyonda aktif check-in var, backend durumu kontrol ediliyor...');
+          print('📍 Lokasyon ID: ${location.id}, Mevcut Session: ${_currentSession!.id}');
+          
+          // Backend'den aktif session'ı ve log'larını çek
+          final activeSessionResult = await _apiService.getActiveWorkSession();
+          
+          if (activeSessionResult['success'] == true && activeSessionResult['logs'] != null) {
+            final logsData = activeSessionResult['logs'] as List;
+            print('📋 Backend\'den ${logsData.length} log geldi');
+            
+            // Bu lokasyon için aktif check-in var mı? (tüm status'leri kontrol et)
+            LocationLog? activeLog;
+            String? activeSessionId;
+            
+            // Önce aktif session'ın log'larını kontrol et
+            for (final logData in logsData) {
+              final log = LocationLog.fromJson(logData);
+              print('  - Log: locationId=${log.locationId}, sessionId=${log.workSessionId}, status=${log.status}');
+              
+              // Location ID eşleşiyor ve check-in yapılmış (henüz check-out yapılmamış)
+              if (log.locationId == location.id && 
+                  log.checkedInAt != null && 
+                  log.checkedOutAt == null &&
+                  log.status == 'checked_in') {
+                activeLog = log;
+                activeSessionId = log.workSessionId;
+                print('✅ Bu lokasyon için aktif check-in bulundu: Log ID=${log.id}, Session=${activeSessionId}');
+                break;
+              }
+            }
+            
+            // Eğer aktif session'ın log'larında bulamadıysak, başka session'dan aktif check-in olabilir
+            // Backend kontrolü user_id + location_id yapıyor, work_session_id kontrolü yok
+            // Bu durumda direkt check-out yapmayı deneyebiliriz ama log ID'ye ihtiyacımız var
+            // Şimdilik aktif session'ın log'larında aramayı sürdürelim
+            
+            if (activeLog != null && activeSessionId != null) {
+              // Aynı session'a aitse, log'u local'e ekle
+              if (activeSessionId == _currentSession!.id) {
+                print('✅ Aktif check-in bu session\'a ait (Log ID: ${activeLog.id}), local state güncelleniyor...');
+                
+                // logData'dan direkt kullan
+                for (final logData in logsData) {
+                  final log = LocationLog.fromJson(logData);
+                  if (log.locationId == location.id && log.id == activeLog.id) {
+                    await _handleCheckInSuccess(location.id, logData);
+                    // Geofencing state'i de güncelle
+                    _geofencingService?.markLocationCheckedIn(location.id);
+                    return {
+                      'success': true,
+                      'log': logData,
+                      'message': 'Check-in zaten mevcut, state güncellendi',
+                    };
+                  }
+                }
+                // Eğer bulunamazsa, activeLog'dan oluştur
+                await _handleCheckInSuccess(location.id, activeLog.toJson());
+                _geofencingService?.markLocationCheckedIn(location.id);
+                return {
+                  'success': true,
+                  'log': activeLog.toJson(),
+                  'message': 'Check-in zaten mevcut, state güncellendi',
+                };
+              } else {
+                // Farklı session'a aitse, önce check-out yap
+                print('⚠️ Aktif check-in farklı session\'a ait (Session: $activeSessionId), önce check-out yapılıyor...');
+                
+                // Önce eski check-in'i check-out yap
+                if (activeLog.id != null) {
+                  try {
+                    final timeSinceCheckIn = DateTime.now().difference(activeLog.checkedInAt);
+                    final durationMinutes = timeSinceCheckIn.inMinutes.toInt();
+                    
+                    // Check-out yap (farklı session'a ait log ile)
+                    final checkoutResult = await _apiService.checkOutLocation(
+                      logId: activeLog.id!,
+                      durationMinutes: durationMinutes,
+                      notes: 'Önceki session\'dan otomatik check-out',
+                      lat: position.latitude,
+                      lng: position.longitude,
+                    );
+                    
+                    if (checkoutResult['success'] == true) {
+                      print('✅ Önceki session\'dan check-out başarılı, şimdi yeni check-in yapılıyor...');
+                      
+                      // Şimdi yeni check-in yap
+                      await Future.delayed(const Duration(milliseconds: 500));
+                      final retryResult = await _apiService.checkInLocation(
+                        sessionId: _currentSession!.id!,
+                        locationId: location.id,
+                        assignmentId: location.assignmentId,
+                        lat: position.latitude,
+                        lng: position.longitude,
+                      );
+                      
+                      if (retryResult['success'] == true) {
+                        await _handleCheckInSuccess(location.id, retryResult['log']);
+                        _geofencingService?.markLocationCheckedIn(location.id);
+                        return {
+                          'success': true,
+                          'log': retryResult['log'],
+                          'message': 'Önceki check-in kapatıldı ve yeni check-in yapıldı',
+                        };
+                      } else {
+                        return retryResult;
+                      }
+                    } else {
+                      print('⚠️ Önceki check-out başarısız: ${checkoutResult['message']}');
+                      return {
+                        'success': false,
+                        'message': 'Önceki session\'dan check-out yapılamadı: ${checkoutResult['message']}',
+                      };
+                    }
+                  } catch (e) {
+                    print('❌ Önceki session check-out hatası: $e');
+                    return {
+                      'success': false,
+                      'message': 'Önceki session\'dan check-out yapılırken hata: $e',
+                    };
+                  }
+                } else {
+                  // Farklı session ama log ID yok, sadece bilgilendirme yap
+                  print('⚠️ Aktif check-in farklı session\'a ait ama log ID yok, işlem yapılamadı');
+                  // Geofencing state'ini güncelle (bu session için check-in yapılmış olarak)
+                  _geofencingService?.markLocationCheckedIn(location.id);
+                  return {
+                    'success': false,
+                    'message': 'Bu lokasyonda farklı bir session\'dan aktif check-in var. Lütfen önce o session\'ı bitirin.',
+                  };
+                }
+              }
+            } else {
+              // Aktif log bulunamadı - muhtemelen başka bir session'da aktif check-in var
+              // Backend kontrolü user_id + location_id yapıyor, work_session_id kontrolü yok
+              // Bu durumda aktif session'ın log'larında bu log yok demektir
+              print('⚠️ Backend\'de bu lokasyon için aktif log bulunamadı.');
+              print('⚠️ Bu, başka bir session\'da aktif check-in olduğu anlamına gelebilir.');
+              print('⚠️ Kullanıcıya bilgilendirme yapılıyor, geofencing state\'i güncellenmeyecek.');
+              
+              // Geofencing state'ini güncelleme - check-in gerçekten yapılmadı
+              // Kullanıcıya daha açıklayıcı mesaj ver
+              return {
+                'success': false,
+                'message': 'Bu lokasyonda başka bir iş oturumunda aktif check-in var. Önce o oturumu bitirin veya o lokasyondan check-out yapın.',
+              };
+            }
+          } else {
+            // Backend'den aktif session çekilemedi
+            print('⚠️ Backend\'den aktif session çekilemedi');
+            return {
+              'success': false,
+              'message': errorMessage,
+            };
+          }
+        }
+        
         return result;
       }
     } on DioException catch (e) {
@@ -390,7 +564,7 @@ class WorkSessionService extends ChangeNotifier {
         final timeSinceCheckIn = DateTime.now().difference(log.checkedInAt);
         if (timeSinceCheckIn.inMinutes >= 5) {
           // Eski bir check-in, direkt queue'ya al
-          final durationMinutes = timeSinceCheckIn.inMinutes;
+          final durationMinutes = timeSinceCheckIn.inMinutes.toInt();
           Position? checkoutPosition;
           try {
             checkoutPosition = await Geolocator.getCurrentPosition(
@@ -418,8 +592,8 @@ class WorkSessionService extends ChangeNotifier {
         }
       }
 
-      // 2. Süreyi hesapla
-      durationMinutes = DateTime.now().difference(log.checkedInAt).inMinutes;
+      // 2. Süreyi hesapla (her zaman integer olmalı - backend uyumluluğu için)
+      durationMinutes = DateTime.now().difference(log.checkedInAt).inMinutes.toInt();
 
       Position? checkoutPosition;
       try {
@@ -549,24 +723,89 @@ class WorkSessionService extends ChangeNotifier {
         _currentSession = WorkSession.fromJson(result['session']);
         _isSessionActive = true;
         
-        // Location logs'u yükle
+        // Her session için check-in'ler sıfırdan başlar - önce temizle
+        _locationLogs.clear();
+        
+        // Location logs'u yükle (sadece bu session'a ait olanlar)
         if (result['logs'] != null) {
           final logsData = result['logs'] as List;
           _locationLogs = Map.fromEntries(
             logsData.map((log) {
               final locationLog = LocationLog.fromJson(log);
-              return MapEntry(locationLog.locationId, locationLog);
-            }),
+              // Güvenlik: Sadece bu session'a ait log'ları ekle
+              if (locationLog.workSessionId == _currentSession!.id) {
+                return MapEntry(locationLog.locationId, locationLog);
+              }
+              return null;
+            }).whereType<MapEntry<int, LocationLog>>(),
           );
+          
+          print('📋 ${_locationLogs.length} location log yüklendi (Session: ${_currentSession!.id})');
+        } else {
+          print('📋 Location log yok (Yeni session - sıfırdan başlıyor)');
         }
 
-        if (_trackedLocations.isEmpty) {
-          _trackedLocations = await _loadTrackedLocationsFromCache(await OfflineStorageService.getActiveWorkSession());
+        // Lokasyonları yükle - önce cache'den, yoksa backend'den çek
+        final sessionData = await OfflineStorageService.getActiveWorkSession();
+        _trackedLocations = await _loadTrackedLocationsFromCache(sessionData);
+        
+        // Hala boşsa veya çok az lokasyon varsa, backend'den tüm lokasyonları çek
+        if (_trackedLocations.isEmpty || _trackedLocations.length < 5) {
+          print('⚠️ Cache\'de yeterli lokasyon yok (${_trackedLocations.length}), backend\'den lokasyonlar yükleniyor...');
+          
+          try {
+            // Backend'den tüm lokasyonları çek (session'a özel olabilir)
+            final locationsResult = await _apiService.getUserAssignmentsRouted();
+            if (locationsResult['success'] == true) {
+              final locations = locationsResult['locations'] ?? [];
+              if (locations.isNotEmpty) {
+                _trackedLocations = locations;
+                print('✅ ${_trackedLocations.length} lokasyon backend\'den yüklendi');
+                
+                // OfflineStorage'a da kaydet (gelecek için)
+                await OfflineStorageService.saveLocations(locations);
+              } else {
+                // Backend'den gelmediyse, OfflineStorage'dan dene
+                final allLocations = await OfflineStorageService.getLocations();
+                if (allLocations.isNotEmpty) {
+                  _trackedLocations = allLocations;
+                  print('✅ ${_trackedLocations.length} lokasyon OfflineStorage\'dan yüklendi');
+                }
+              }
+            } else {
+              // Backend hatası, OfflineStorage'dan dene
+              print('⚠️ Backend\'den lokasyon yüklenemedi, OfflineStorage\'dan deneniyor...');
+              final allLocations = await OfflineStorageService.getLocations();
+              if (allLocations.isNotEmpty) {
+                _trackedLocations = allLocations;
+                print('✅ ${_trackedLocations.length} lokasyon OfflineStorage\'dan yüklendi');
+              }
+            }
+          } catch (e) {
+            print('⚠️ Backend lokasyon yükleme hatası: $e, OfflineStorage\'dan deneniyor...');
+            // Hata durumunda OfflineStorage'dan yükle
+            final allLocations = await OfflineStorageService.getLocations();
+            if (allLocations.isNotEmpty) {
+              _trackedLocations = allLocations;
+              print('✅ ${_trackedLocations.length} lokasyon OfflineStorage\'dan yüklendi');
+            }
+          }
+        }
+        
+        print('📋 Toplam ${_trackedLocations.length} lokasyon yüklendi');
+        for (var i = 0; i < _trackedLocations.length; i++) {
+          final loc = _trackedLocations[i];
+          final status = getLocationStatus(loc.id);
+          print('   ${i + 1}. ${loc.displayAddress} (Status: $status)');
         }
         
         // Local'e de kaydet
         await _saveSessionLocally();
         await _restartTrackingPipelines();
+        
+        // ✅ Mevcut check-in log'larını geofencing service'e bildir
+        await _syncGeofencingStateWithLogs();
+        
         unawaited(_processPendingCheckActions());
         
         notifyListeners();
@@ -588,14 +827,25 @@ class WorkSessionService extends ChangeNotifier {
           _currentSession = WorkSession.fromJson(sessionData['session']);
           _isSessionActive = true;
           
+          // Her session için check-in'ler sıfırdan başlar - önce temizle
+          _locationLogs.clear();
+          
           final logsData = sessionData['logs'] as List?;
           if (logsData != null) {
             _locationLogs = Map.fromEntries(
               logsData.map((log) {
                 final locationLog = LocationLog.fromJson(log);
-                return MapEntry(locationLog.locationId, locationLog);
-              }),
+                // Güvenlik: Sadece bu session'a ait log'ları ekle
+                if (locationLog.workSessionId == _currentSession!.id) {
+                  return MapEntry(locationLog.locationId, locationLog);
+                }
+                return null;
+              }).whereType<MapEntry<int, LocationLog>>(),
             );
+            
+            print('📋 ${_locationLogs.length} location log local\'den yüklendi (Session: ${_currentSession!.id})');
+          } else {
+            print('📋 Location log yok (Yeni session - sıfırdan başlıyor)');
           }
 
           _trackedLocations = _restoreTrackedLocationsFromData(sessionData);
@@ -603,10 +853,14 @@ class WorkSessionService extends ChangeNotifier {
             _trackedLocations = await OfflineStorageService.getLocations();
           }
           
+          await _restartTrackingPipelines();
+          
+          // ✅ Mevcut check-in log'larını geofencing service'e bildir
+          await _syncGeofencingStateWithLogs();
+          
           notifyListeners();
           print('✅ Local\'den aktif oturum yüklendi');
           
-          await _restartTrackingPipelines();
           unawaited(_processPendingCheckActions());
         }
       } catch (localError) {
@@ -727,9 +981,9 @@ class WorkSessionService extends ChangeNotifier {
       
       print('📍 Konum buffer\'a eklendi: ${position.latitude}, ${position.longitude} (Toplam: ${_locationBuffer.length})');
       
-      // Eğer buffer 10'dan fazla konum içeriyorsa hemen gönder (güvenlik)
-      // Backend maksimum 10 konum kabul ediyor, bu yüzden limit 10
-      if (_locationBuffer.length >= 10) {
+      // Eğer buffer 20'den fazla konum içeriyorsa hemen gönder (güvenlik)
+      // 15 sn toplama ile 5 dakikada ~20 konum olacağı için limit 20'ye çıkarıldı
+      if (_locationBuffer.length >= 20) {
         print('⚠️ Buffer doldu (${_locationBuffer.length}), hemen gönderiliyor...');
         await _sendBatchLocationUpdate();
       }
@@ -780,6 +1034,7 @@ class WorkSessionService extends ChangeNotifier {
       const maxBatchSize = 10;
       int totalSent = 0;
       int totalFailed = 0;
+      final failedBatches = <Map<String, dynamic>>[];
       
       // Konumları 10'ar 10'ar grupla
       for (int i = 0; i < locationsToSend.length; i += maxBatchSize) {
@@ -801,13 +1056,24 @@ class WorkSessionService extends ChangeNotifier {
           print('✅ Batch ${(i ~/ maxBatchSize) + 1} başarılı: ${batch.length} konum kaydedildi');
         } else {
           totalFailed += batch.length;
-          print('❌ Batch ${(i ~/ maxBatchSize) + 1} başarısız: ${result['message']}');
+          failedBatches.addAll(batch);
           
-          // Başarısız batch'i offline'a kaydet
-          await OfflineStorageService.savePendingLocationUpdates(
-            sessionId: _currentSession!.id!,
-            locations: batch,
-          );
+          // 422 validation hatası ise detayları logla
+          if (result['status_code'] == 422) {
+            final errorDetails = result['error_details'];
+            print('🔴 Batch ${(i ~/ maxBatchSize) + 1} 422 Validation Hatası:');
+            print('Error Details: $errorDetails');
+            if (errorDetails != null && errorDetails is Map) {
+              if (errorDetails.containsKey('errors')) {
+                print('Validation Errors: ${errorDetails['errors']}');
+              }
+              if (errorDetails.containsKey('message')) {
+                print('Backend Message: ${errorDetails['message']}');
+              }
+            }
+          } else {
+            print('❌ Batch ${(i ~/ maxBatchSize) + 1} başarısız: ${result['message']}');
+          }
         }
       }
       
@@ -816,25 +1082,29 @@ class WorkSessionService extends ChangeNotifier {
         print('✅ Toplu konum güncellemesi tamamlandı: $totalSent konum kaydedildi');
       }
       
-      if (totalFailed == 0) {
-        // Tüm batch'ler başarılı, buffer'ı temizle
-        _locationBuffer.clear();
-      } else {
-        // Bazı batch'ler başarısız, sadece başarılı olanları buffer'dan çıkar
-        // Başarısız olanlar zaten offline'a kaydedildi
-        if (totalSent == locationsToSend.length) {
-          // Hepsi başarılı
-          _locationBuffer.clear();
-        } else {
-          // Başarısız olanları buffer'da tutma, zaten offline'a kaydedildi
-          // Buffer'ı temizle, çünkü başarısız olanlar offline storage'da
-          _locationBuffer.clear();
+      if (totalFailed > 0) {
+        // Başarısız olan batch'leri offline'a kaydet
+        if (failedBatches.isNotEmpty) {
+          await OfflineStorageService.savePendingLocationUpdates(
+            sessionId: _currentSession!.id!,
+            locations: failedBatches,
+          );
+          print('💾 $totalFailed GPS verisi offline kayıt edildi (Toplam: ${failedBatches.length})');
         }
       }
       
-      // Tüm batch'ler tamamlandı, buffer temizlendi
-      if (totalFailed > 0) {
-        print('⚠️ $totalFailed konum offline\'a kaydedildi, daha sonra tekrar denenecek');
+      // Tüm batch'ler tamamlandı, buffer'ı temizle
+      // (Başarısız olanlar zaten offline storage'da)
+      if (totalSent == locationsToSend.length) {
+        // Hepsi başarılı
+        _locationBuffer.clear();
+      } else if (totalSent > 0) {
+        // Bazıları başarılı, başarısız olanları buffer'dan çıkar
+        // Başarısız olanlar zaten offline'a kaydedildi, buffer'ı temizle
+        _locationBuffer.clear();
+      } else {
+        // Hiçbiri başarılı değil, hepsi offline'a kaydedildi
+        _locationBuffer.clear();
       }
     } catch (e) {
       print('❌ Toplu konum güncellemesi hatası: $e');
@@ -914,7 +1184,15 @@ class WorkSessionService extends ChangeNotifier {
             } else {
               batchFailed += batch.length;
               failedBatches.addAll(batch);
-              print('❌ Pending Batch ${(i ~/ maxBatchSize) + 1} başarısız: ${result['message']}');
+              
+              // 422 validation hatası ise detayları logla
+              if (result['status_code'] == 422) {
+                final errorDetails = result['error_details'];
+                print('🔴 Pending Batch ${(i ~/ maxBatchSize) + 1} 422 Validation Hatası:');
+                print('Error Details: $errorDetails');
+              } else {
+                print('❌ Pending Batch ${(i ~/ maxBatchSize) + 1} başarısız: ${result['message']}');
+              }
             }
           }
           
@@ -924,7 +1202,7 @@ class WorkSessionService extends ChangeNotifier {
             totalSynced += locations.length;
             print('✅ ${locations.length} konum başarıyla senkronize edildi');
           } else if (batchSynced > 0) {
-            // Bazı batch'ler başarılı, başarısız olanları güncelle
+            // Bazı batch'ler başarılı
             totalSynced += batchSynced;
             totalFailed += batchFailed;
             
@@ -936,6 +1214,9 @@ class WorkSessionService extends ChangeNotifier {
               );
             }
             
+            // Başarılı olanları pending'den çıkar (manuel olarak)
+            // Not: Pending storage'da tüm konumlar birlikte tutuluyor,
+            // bu yüzden kısmi başarı durumunda tüm pending'i silip başarısız olanları tekrar ekliyoruz
             print('⚠️ $batchSynced konum senkronize edildi, $batchFailed konum tekrar offline\'a kaydedildi');
           } else {
             // Hiçbiri başarılı değil
@@ -1025,10 +1306,23 @@ class WorkSessionService extends ChangeNotifier {
       if (result['success'] == true) {
         print('✅ Otomatik check-in başarılı: ${location.displayAddress}');
         
+        // Geofencing state'i güncelle
+        _geofencingService?.markLocationCheckedIn(location.id);
+        
         // Bildirim göster (mounted kontrolü gerekebilir)
         // ScaffoldMessenger.of(context).showSnackBar(...)
       } else {
-        print('❌ Otomatik check-in başarısız: ${result['message']}');
+        final errorMessage = result['message'] ?? '';
+        final statusCode = result['status_code'] ?? 0;
+        
+        // "Zaten aktif check-in var" hatası - bu durumda state senkronize edildi
+        if (statusCode == 400 && errorMessage.toLowerCase().contains('zaten aktif')) {
+          print('ℹ️ Bu lokasyonda zaten aktif check-in var (muhtemelen farklı session\'dan), state güncellendi');
+          // checkInLocation fonksiyonu zaten state'i güncelledi, sadece geofencing'i güncelle
+          _geofencingService?.markLocationCheckedIn(location.id);
+        } else {
+          print('❌ Otomatik check-in başarısız: $errorMessage');
+        }
       }
     } catch (e) {
       print('❌ Otomatik check-in hatası: $e');
@@ -1056,8 +1350,26 @@ class WorkSessionService extends ChangeNotifier {
       
       // Log ID kontrolü - otomatik check-out için kritik
       if (log.id == null || log.id!.isEmpty) {
-        print('⚠️ Otomatik check-out iptal: Check-in henüz tamamlanmamış (log ID yok)');
-        // Check-in pending ise, bir süre bekleyip tekrar dene (pending check-in 5 dakika sonra check-out'a izin verir)
+        print('⚠️ Otomatik check-out: Check-in henüz tamamlanmamış (log ID yok)');
+        
+        // Check-in pending ise, 5 dakika kontrolü yap
+        final timeSinceCheckIn = DateTime.now().difference(log.checkedInAt);
+        if (timeSinceCheckIn.inMinutes >= 5) {
+          // 5 dakika geçmiş, checkOutLocation fonksiyonunu çağır (o zaten queue'ya alacak)
+          print('⚠️ Pending check-in çok eski (${timeSinceCheckIn.inMinutes} dk), check-out deneniyor...');
+          final result = await checkOutLocation(
+            location: location,
+            notes: 'Otomatik check-out',
+          );
+          if (result['success'] == true) {
+            print('✅ Otomatik check-out başarılı (pending check-in için): ${location.displayAddress}');
+          } else {
+            print('❌ Otomatik check-out başarısız: ${result['message']}');
+          }
+          return;
+        }
+        
+        print('⚠️ Check-in henüz yeni (${timeSinceCheckIn.inMinutes} dk), otomatik check-out bekleniyor...');
         return;
       }
       
@@ -1094,6 +1406,114 @@ class WorkSessionService extends ChangeNotifier {
 
   void _markLocationCheckedOutState(int locationId) {
     _geofencingService?.markLocationCheckedOut(locationId);
+  }
+
+  /// İki nokta arası mesafe hesapla (Haversine formula) - Helper metot
+  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    const earthRadius = 6371000; // metre
+    
+    final dLat = _toRadians(lat2 - lat1);
+    final dLon = _toRadians(lon2 - lon1);
+    
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_toRadians(lat1)) *
+            math.cos(_toRadians(lat2)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    
+    return earthRadius * c; // metre cinsinden
+  }
+
+  double _toRadians(double degrees) {
+    return degrees * math.pi / 180;
+  }
+
+  /// Geofencing service state'ini mevcut log'larla senkronize et
+  Future<void> _syncGeofencingStateWithLogs() async {
+    if (_geofencingService == null) {
+      print('⚠️ Geofencing service henüz başlatılmamış, state senkronizasyonu atlanıyor');
+      return;
+    }
+
+    print('🔄 Geofencing state\'i log\'larla senkronize ediliyor...');
+    print('📋 Toplam ${_locationLogs.length} log kontrol ediliyor...');
+    
+    // Mevcut konumu al (proximity kontrolü için)
+    Position? currentPosition;
+    try {
+      currentPosition = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 5),
+      );
+      print('📍 Mevcut konum alındı: ${currentPosition.latitude}, ${currentPosition.longitude}');
+    } catch (e) {
+      print('⚠️ Mevcut konum alınamadı: $e');
+      // Devam et, proximity kontrolü olmadan senkronize et
+    }
+    
+    int syncedCount = 0;
+    for (final entry in _locationLogs.entries) {
+      final locationId = entry.key;
+      final log = entry.value;
+      
+      // Lokasyon adını bul (log için)
+      String locationAddress = 'Bilinmeyen';
+      Location? location;
+      try {
+        location = _trackedLocations.firstWhere(
+          (loc) => loc.id == locationId,
+        );
+        locationAddress = location.displayAddress;
+      } catch (e) {
+        // Lokasyon bulunamadı, sadece ID kullan
+        locationAddress = 'Location ID: $locationId';
+      }
+      
+      if (log.isInProgress) {
+        // Check-in yapılmış ama check-out yapılmamış
+        _geofencingService?.markLocationCheckedIn(locationId);
+        
+        // ✅ MEVCUT KONUMU KONTROL ET - Eğer uzaktaysak, exitedAt set et
+        if (currentPosition != null && location != null && _geofencingService != null) {
+          // Mesafe hesapla (basit Haversine formülü)
+          final distance = _calculateDistance(
+            currentPosition.latitude,
+            currentPosition.longitude,
+            location.lat,
+            location.lng,
+          );
+          
+          // Check-out distance threshold (genellikle 100m)
+          const checkOutDistance = 100.0;
+          
+          if (distance >= checkOutDistance) {
+            // Kullanıcı uzakta, exitedAt set et ki otomatik check-out çalışabilsin
+            print('   ⚠️ Location $locationId ($locationAddress): Uzaktayız (${distance.toStringAsFixed(0)}m), exitedAt set ediliyor...');
+            _geofencingService!.markLocationExited(locationId, DateTime.now());
+          } else {
+            print('   ✅ Location $locationId ($locationAddress): Yakındayız (${distance.toStringAsFixed(0)}m)');
+          }
+        }
+        
+        syncedCount++;
+        print('   ✅ Location $locationId ($locationAddress): Check-in durumu senkronize edildi');
+        print('      📅 Check-in: ${log.checkedInAt}');
+      } else if (log.isCompleted) {
+        // Check-out yapılmış
+        _geofencingService?.markLocationCheckedOut(locationId);
+        syncedCount++;
+        print('   ✅ Location $locationId ($locationAddress): Check-out durumu senkronize edildi');
+        print('      📅 Check-in: ${log.checkedInAt}, Check-out: ${log.checkedOutAt}');
+      }
+    }
+    
+    if (syncedCount == 0) {
+      print('ℹ️ Senkronize edilecek aktif log yok');
+    } else {
+      print('✅ Geofencing state senkronizasyonu tamamlandı: $syncedCount log senkronize edildi');
+    }
   }
 
   List<Location> _restoreTrackedLocationsFromData(Map<String, dynamic>? data) {
@@ -1136,39 +1556,105 @@ class WorkSessionService extends ChangeNotifier {
       return;
     }
     
+    // Sadece tamamlanmamış lokasyonları filtrele
+    final locationsToTrack = _trackedLocations.where((loc) {
+      final status = getLocationStatus(loc.id);
+      return status != 'completed';
+    }).toList();
+    
+    print('🔄 Geofencing yeniden başlatılıyor - ${locationsToTrack.length} lokasyon takip edilecek');
+    for (final loc in locationsToTrack) {
+      final status = getLocationStatus(loc.id);
+      print('   📍 ${loc.displayAddress} (Status: $status)');
+    }
+    
+    if (locationsToTrack.isEmpty) {
+      print('⚠️ Takip edilecek aktif lokasyon yok (hepsi tamamlanmış)');
+      await _stopGeofencing();
+      return;
+    }
+    
     await _stopGeofencing();
-    await _startGeofencing(_trackedLocations);
+    await _startGeofencing(locationsToTrack);
     _startLocationUpdateTimer();
   }
 
   /// Uygulama resume olduğunda GPS tracking'i yeniden başlat (eğer aktif session varsa)
   Future<void> resumeTrackingIfNeeded() async {
     try {
-      // Aktif session kontrolü
+      // Önce backend'den aktif session'ı ve log'ları yükle
+      print('🔄 Uygulama resume oldu - Aktif session kontrol ediliyor...');
+      await loadActiveSession();
+      
+      // Session yüklendikten sonra kontrol et
       if (!_isSessionActive || _currentSession == null) {
         print('ℹ️ Aktif session yok, GPS tracking yeniden başlatılmayacak');
         return;
       }
       
-      // Takip edilecek lokasyonlar var mı kontrol et
-      if (_trackedLocations.isEmpty) {
-        print('⚠️ Takip edilecek lokasyon yok, lokasyonlar yükleniyor...');
-        // Lokasyonları tekrar yüklemeyi dene
-        final sessionData = await OfflineStorageService.getActiveWorkSession();
-        if (sessionData != null) {
-          _trackedLocations = _restoreTrackedLocationsFromData(sessionData);
-        }
+      // Lokasyonları her zaman yeniden yükle (cache'deki veri eksik olabilir)
+      print('🔄 GPS tracking yeniden başlatılıyor...');
+      print('📋 Lokasyonlar yeniden yükleniyor...');
+      
+      // Önce cache'den dene
+      final sessionData = await OfflineStorageService.getActiveWorkSession();
+      _trackedLocations = await _loadTrackedLocationsFromCache(sessionData);
+      
+      // Hala boşsa veya çok az lokasyon varsa, backend'den çek
+      if (_trackedLocations.isEmpty || _trackedLocations.length < 5) {
+        print('⚠️ Cache\'de yeterli lokasyon yok (${_trackedLocations.length}), backend\'den lokasyonlar yükleniyor...');
         
-        if (_trackedLocations.isEmpty) {
-          print('⚠️ Lokasyonlar yüklenemedi, GPS tracking başlatılamıyor');
-          return;
+        try {
+          // Backend'den tüm lokasyonları çek
+          final locationsResult = await _apiService.getUserAssignmentsRouted();
+          if (locationsResult['success'] == true) {
+            final locations = locationsResult['locations'] ?? [];
+            if (locations.isNotEmpty) {
+              _trackedLocations = locations;
+              print('✅ ${_trackedLocations.length} lokasyon backend\'den yüklendi');
+              
+              // OfflineStorage'a da kaydet (gelecek için)
+              await OfflineStorageService.saveLocations(locations);
+            } else {
+              // Backend'den gelmediyse, OfflineStorage'dan dene
+              final allLocations = await OfflineStorageService.getLocations();
+              if (allLocations.isNotEmpty) {
+                _trackedLocations = allLocations;
+                print('✅ ${_trackedLocations.length} lokasyon OfflineStorage\'dan yüklendi');
+              }
+            }
+          } else {
+            // Backend hatası, OfflineStorage'dan dene
+            print('⚠️ Backend\'den lokasyon yüklenemedi, OfflineStorage\'dan deneniyor...');
+            final allLocations = await OfflineStorageService.getLocations();
+            if (allLocations.isNotEmpty) {
+              _trackedLocations = allLocations;
+              print('✅ ${_trackedLocations.length} lokasyon OfflineStorage\'dan yüklendi');
+            }
+          }
+        } catch (e) {
+          print('⚠️ Backend lokasyon yükleme hatası: $e, OfflineStorage\'dan deneniyor...');
+          // Hata durumunda OfflineStorage'dan yükle
+          final allLocations = await OfflineStorageService.getLocations();
+          if (allLocations.isNotEmpty) {
+            _trackedLocations = allLocations;
+            print('✅ ${_trackedLocations.length} lokasyon OfflineStorage\'dan yüklendi');
+          }
         }
       }
       
-      print('🔄 Uygulama resume oldu - GPS tracking yeniden başlatılıyor...');
+      print('📋 Toplam ${_trackedLocations.length} lokasyon yüklendi');
+      for (var i = 0; i < _trackedLocations.length; i++) {
+        final loc = _trackedLocations[i];
+        final status = getLocationStatus(loc.id);
+        print('   ${i + 1}. ${loc.displayAddress} (Status: $status)');
+      }
       
-      // GPS tracking'i yeniden başlat
+      // GPS tracking'i yeniden başlat (loadActiveSession zaten log'ları yüklüyor)
       await _restartTrackingPipelines();
+      
+      // Mevcut check-in log'larını geofencing service'e bildir ve proximity durumunu kontrol et
+      await _syncGeofencingStateWithLogs();
       
       print('✅ GPS tracking başarıyla yeniden başlatıldı');
     } catch (e) {

@@ -17,7 +17,7 @@ class AutoCheckInSettings {
   AutoCheckInSettings({
     this.autoCheckInEnabled = true,  // Her zaman aktif
     this.autoCheckOutEnabled = true,  // Her zaman aktif
-    this.checkInProximityMeters = 50.0,  // Sabit: 50 metre
+    this.checkInProximityMeters = 100.0,  // Sabit: 100 metre
     this.checkInDwellMinutes = 2,  // Sabit: 2 dakika
     this.checkOutDistanceMeters = 100.0,  // Sabit: 100 metre
     this.checkOutDepartureMinutes = 5,  // Sabit: 5 dakika
@@ -29,7 +29,7 @@ class AutoCheckInSettings {
     return AutoCheckInSettings(
       autoCheckInEnabled: true,  // Her zaman aktif
       autoCheckOutEnabled: true,  // Her zaman aktif
-      checkInProximityMeters: 50.0,  // Sabit: 50 metre
+      checkInProximityMeters: 100.0,  // Sabit: 100 metre
       checkInDwellMinutes: 2,  // Sabit: 2 dakika
       checkOutDistanceMeters: 100.0,  // Sabit: 100 metre
       checkOutDepartureMinutes: 5,  // Sabit: 5 dakika

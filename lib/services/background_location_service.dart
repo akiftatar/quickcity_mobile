@@ -148,8 +148,8 @@ class BackgroundLocationService {
           nearbyCount++;
           print('📏 ${locationData['address']}: ${distance.toStringAsFixed(0)}m');
 
-          // 50 metre içinde mi?
-          if (distance <= 50) {
+          // 100 metre içinde mi?
+          if (distance <= 100) {
             print('🎯 Lokasyona yaklaşıldı: $address');
             
             // Bildirim gönder
@@ -242,7 +242,7 @@ class BackgroundLocationService {
               lng,
             );
             
-            if (distance <= 50) {
+            if (distance <= 100) {
               print('🎯 iOS Background: Lokasyona yaklaşıldı: $address');
               
               await _showArrivalNotification(

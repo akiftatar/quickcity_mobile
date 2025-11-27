@@ -736,11 +736,42 @@ class ApiService {
 
       if (response.statusCode == 200) {
         final data = response.data;
+        print('🔍 BACKEND RESPONSE (getActiveWorkSession):');
+        print('   data.keys: ${data.keys}');
+        print('   data[success]: ${data['success']}');
+        if (data['data'] != null) {
+          print('   data[data].keys: ${data['data'] is Map ? (data['data'] as Map).keys : 'NOT A MAP'}');
+        }
+        print('   location_logs: ${data['location_logs']}');
+        print('   logs: ${data['logs']}');
+        print('   data[data][logs]: ${data['data'] is Map ? (data['data'] as Map)['logs'] : 'N/A'}');
+        print('   data[data][location_logs]: ${data['data'] is Map ? (data['data'] as Map)['location_logs'] : 'N/A'}');
+        
         if (data['success'] == true) {
+          // Log'ları farklı field'lardan da kontrol et
+          List<dynamic> logs = [];
+          if (data['location_logs'] != null && data['location_logs'] is List) {
+            logs = data['location_logs'] as List;
+          } else if (data['logs'] != null && data['logs'] is List) {
+            logs = data['logs'] as List;
+          } else if (data['data'] is Map) {
+            final sessionData = data['data'] as Map;
+            if (sessionData['location_logs'] != null && sessionData['location_logs'] is List) {
+              logs = sessionData['location_logs'] as List;
+            } else if (sessionData['logs'] != null && sessionData['logs'] is List) {
+              logs = sessionData['logs'] as List;
+            }
+          }
+          
+          print('   ✅ Bulunan log sayısı: ${logs.length}');
+          if (logs.isNotEmpty) {
+            print('   İlk log örneği: ${logs.first}');
+          }
+          
           return {
             'success': true,
             'session': data['data'],
-            'logs': data['location_logs'] ?? [],
+            'logs': logs,
             'message': data['message'] ?? 'Aktif oturum getirildi',
           };
         } else {
@@ -1009,6 +1040,7 @@ class ApiService {
         'success': false,
         'message': e.response?.data['message'] ?? _handleDioError(e),
         'error_details': e.response?.data,
+        'status_code': e.response?.statusCode,
       };
     } catch (e) {
       print('🔴 CHECK-IN UNEXPECTED ERROR: $e');
@@ -1089,6 +1121,7 @@ class ApiService {
         'success': false,
         'message': e.response?.data['message'] ?? _handleDioError(e),
         'error_details': e.response?.data,
+        'status_code': e.response?.statusCode,
       };
     } catch (e) {
       print('🔴 CHECK-OUT UNEXPECTED ERROR: $e');

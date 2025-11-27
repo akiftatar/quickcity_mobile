@@ -100,13 +100,23 @@ class OfflineStorageService {
     if (_locationsBox == null) await initialize();
     
     final locations = <Location>[];
+    int successCount = 0;
+    int errorCount = 0;
+    
     for (var locationMap in _locationsBox!.values) {
       try {
-        locations.add(Location.fromJson(Map<String, dynamic>.from(locationMap)));
-      } catch (e) {
-        print('Location parse error: $e');
+        final map = locationMap is Map ? Map<String, dynamic>.from(locationMap) : locationMap as Map<String, dynamic>;
+        locations.add(Location.fromJson(map));
+        successCount++;
+      } catch (e, stackTrace) {
+        errorCount++;
+        print('❌ Location parse error: $e');
+        print('   Map type: ${locationMap.runtimeType}');
+        print('   Stack: ${stackTrace.toString().split('\n').take(3).join('\n')}');
       }
     }
+    
+    print('📦 Offline storage\'dan lokasyon yükleme: $successCount başarılı, $errorCount hata');
     
     return locations;
   }
@@ -119,9 +129,12 @@ class OfflineStorageService {
     if (locationMap == null) return null;
     
     try {
-      return Location.fromJson(Map<String, dynamic>.from(locationMap));
-    } catch (e) {
-      print('Location parse error: $e');
+      final map = locationMap is Map ? Map<String, dynamic>.from(locationMap) : locationMap as Map<String, dynamic>;
+      return Location.fromJson(map);
+    } catch (e, stackTrace) {
+      print('❌ Location parse error: $e');
+      print('   Map type: ${locationMap.runtimeType}');
+      print('   Stack: ${stackTrace.toString().split('\n').take(3).join('\n')}');
       return null;
     }
   }

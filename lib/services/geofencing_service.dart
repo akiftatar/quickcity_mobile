@@ -406,6 +406,18 @@ class GeofencingService {
           : null;
       
       print('📍 ${location.displayAddress}: ${distance?.toStringAsFixed(0)}m, Proximity: ${state.isInProximity}, Check-in: ${state.hasAutoCheckedIn}, Check-out: ${state.hasAutoCheckedOut}');
+      
+      // DEBUG: Check-out için tüm koşulları kontrol et
+      if (state.hasAutoCheckedIn && !state.hasAutoCheckedOut && !state.isInProximity) {
+        print('   🔍 Check-out adayı: ${location.displayAddress}');
+        print('      - exitedAt: ${state.exitedAt}');
+        if (state.exitedAt != null) {
+          final minutesOutside = now.difference(state.exitedAt!).inMinutes;
+          print('      - minutesOutside: $minutesOutside dk (Gereken: ${checkOutDepartureMinutes} dk)');
+        } else {
+          print('      - ⚠️ exitedAt NULL! Check-out yapılamaz!');
+        }
+      }
 
       // OTOMATIK CHECK-IN kontrolü
       if (_autoSettings!.autoCheckInEnabled &&
@@ -438,6 +450,14 @@ class GeofencingService {
         
         final minutesOutside = now.difference(state.exitedAt!).inMinutes;
         
+        // Debug log ekle
+        print('   🔍 Check-out kontrolü: ${location.displayAddress}');
+        print('      - hasAutoCheckedIn: ${state.hasAutoCheckedIn}');
+        print('      - hasAutoCheckedOut: ${state.hasAutoCheckedOut}');
+        print('      - isInProximity: ${state.isInProximity}');
+        print('      - exitedAt: ${state.exitedAt}');
+        print('      - minutesOutside: $minutesOutside dk (Gereken: ${checkOutDepartureMinutes} dk)');
+        
         if (minutesOutside >= checkOutDepartureMinutes) {
           // Kullanıcı yeterince süre lokasyondan uzakta kaldı, otomatik check-out yap
           print('✅ OTOMATIK CHECK-OUT: ${location.displayAddress} ($minutesOutside dakikadır uzakta)');
@@ -448,6 +468,8 @@ class GeofencingService {
           
           // Bildirim gönder
           _showAutoCheckOutNotification(location, minutesOutside);
+        } else {
+          print('   ⏳ Check-out henüz yapılmayacak: ${checkOutDepartureMinutes - minutesOutside} dakika daha bekleniyor');
         }
       }
     }
@@ -547,6 +569,16 @@ class GeofencingService {
       state.isInProximity = false;
       state.enteredAt = null;
       state.exitedAt = DateTime.now();
+    }
+  }
+
+  /// Lokasyondan çıkıldığını işaretle (check-in var ama uzaktayız)
+  void markLocationExited(int locationId, DateTime exitedAt) {
+    final state = _locationStates[locationId];
+    if (state != null) {
+      state.isInProximity = false;
+      state.exitedAt = exitedAt;
+      print('   🚶 Location $locationId: exitedAt set edildi ($exitedAt)');
     }
   }
 

@@ -38,6 +38,24 @@ class Location {
   });
 
   factory Location.fromJson(Map<String, dynamic> json) {
+    // Nested map'leri güvenli şekilde dönüştür
+    final customerData = json['customer'];
+    final workAreasData = json['work_areas'];
+    
+    Map<String, dynamic>? customerMap;
+    if (customerData != null) {
+      if (customerData is Map) {
+        customerMap = Map<String, dynamic>.from(customerData);
+      } else {
+        customerMap = null;
+      }
+    }
+    
+    Map<String, dynamic> workAreasMap = {};
+    if (workAreasData != null && workAreasData is Map) {
+      workAreasMap = Map<String, dynamic>.from(workAreasData);
+    }
+    
     return Location(
       id: _safeInt(json['id']),
       assignmentId: json['assignment_id']?.toString() ?? json['assignmentId']?.toString(),
@@ -50,8 +68,8 @@ class Location {
       formattedAddress: json['formatted_address']?.toString(),
       description: json['description']?.toString(),
       clusterLabel: json['cluster_label']?.toString() ?? '',
-      customer: json['customer'] != null ? Customer.fromJson(json['customer']) : null,
-      workAreas: WorkAreas.fromJson(json['work_areas'] ?? {}),
+      customer: customerMap != null ? Customer.fromJson(customerMap) : null,
+      workAreas: WorkAreas.fromJson(workAreasMap),
       attachments: _parseAttachments(json['attachments']),
       assignedAt: json['assigned_at']?.toString() ?? '',
       waypointIndex: json['waypoint_index'] != null ? _safeInt(json['waypoint_index']) : null,

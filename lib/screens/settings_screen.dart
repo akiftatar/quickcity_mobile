@@ -25,7 +25,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           // Otomatik Check-In/Out - Her Zaman Aktif (Kullanıcılar değiştiremez)
-          // Check-in: 50m yakınlık, 2dk bekleme
+          // Check-in: 100m yakınlık, 2dk bekleme
           // Check-out: 100m uzaklık, 5dk ayrılma
           
           // Language Selection
